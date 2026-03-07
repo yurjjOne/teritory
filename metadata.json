@@ -1,0 +1,5 @@
+{
+  "name": "Territory Manager",
+  "description": "Offline-first PWA for managing field territories and apartment records.",
+  "requestFramePermissions": []
+}
