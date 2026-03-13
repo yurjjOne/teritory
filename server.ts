@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -18,6 +18,28 @@ if (!fs.existsSync(dbDir)) {
 }
 
 const db = new Database(dbPath);
+const sseClients = new Set<Response>();
+
+function writeSseEvent(response: Response, event: string, payload: unknown) {
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function broadcastSyncEvent(reason: 'mutation' | 'heartbeat' = 'mutation') {
+  if (sseClients.size === 0) {
+    return;
+  }
+
+  const payload = {
+    type: 'sync-needed',
+    reason,
+    timestamp: Date.now(),
+  };
+
+  for (const client of sseClients) {
+    writeSseEvent(client, 'sync', payload);
+  }
+}
 
 // Initialize DB
 db.exec(`
@@ -77,6 +99,21 @@ db.exec(`
 app.use(express.json());
 
 // API Routes
+
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  sseClients.add(res);
+  writeSseEvent(res, 'connected', { timestamp: Date.now() });
+
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
 
 // Get all data (for initial sync)
 app.get('/api/sync', (req, res) => {
@@ -181,12 +218,19 @@ app.post('/api/sync', (req, res) => {
 
   try {
     transaction(mutations);
+    broadcastSyncEvent();
     res.json({ success: true, timestamp: Date.now() });
   } catch (error) {
     console.error('Sync error:', error);
     res.status(500).json({ error: 'Sync failed' });
   }
 });
+
+setInterval(() => {
+  for (const client of sseClients) {
+    client.write(': keepalive\n\n');
+  }
+}, 30000);
 
 
 async function startServer() {

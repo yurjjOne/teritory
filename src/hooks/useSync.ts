@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { db } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 
-const SYNC_POLL_INTERVAL_MS = 5000;
+const FALLBACK_SYNC_POLL_INTERVAL_MS = 30000;
 
 export function useSync() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState(false);
   const isSyncingRef = useRef(false);
+  const syncRef = useRef<() => Promise<void>>(async () => {});
   const mutations = useLiveQuery(() => db.mutations.toArray());
 
   useEffect(() => {
@@ -29,6 +30,11 @@ export function useSync() {
     isSyncingRef.current = true;
     setIsSyncing(true);
     try {
+      const [territoryCount, apartmentCount] = await Promise.all([
+        db.territories.count(),
+        db.apartments.count(),
+      ]);
+
       // 1. Push mutations
       const pendingMutations = await db.mutations.toArray();
       let canPullRemoteChanges = true;
@@ -53,13 +59,20 @@ export function useSync() {
       }
 
       // 2. Pull updates
-      const lastSync = parseInt(localStorage.getItem('lastSync') || '0');
+      const storedLastSync = parseInt(localStorage.getItem('lastSync') || '0');
+      const needsFullResync = (territoryCount === 0 && apartmentCount === 0) || Number.isNaN(storedLastSync);
+      const lastSync = needsFullResync ? 0 : storedLastSync;
       const pullResponse = await fetch(`/api/sync?lastSync=${lastSync}`);
       if (pullResponse.ok) {
         const { territories, apartments, deletedTerritories, timestamp } = await pullResponse.json();
         const deletedTerritoryIds = (deletedTerritories || []).map((territory: any) => territory.id);
 
         await db.transaction('rw', db.territories, db.apartments, async () => {
+          if (needsFullResync) {
+            await db.territories.clear();
+            await db.apartments.clear();
+          }
+
           if (deletedTerritoryIds.length > 0) {
             await db.territories.bulkDelete(deletedTerritoryIds);
             await db.apartments.where('territoryId').anyOf(deletedTerritoryIds).delete();
@@ -120,6 +133,8 @@ export function useSync() {
     }
   };
 
+  syncRef.current = sync;
+
   // Auto-sync when coming online or when mutations are added
   useEffect(() => {
     if (isOnline) {
@@ -133,11 +148,30 @@ export function useSync() {
     }
 
     const intervalId = window.setInterval(() => {
-      void sync();
-    }, SYNC_POLL_INTERVAL_MS);
+      void syncRef.current();
+    }, FALLBACK_SYNC_POLL_INTERVAL_MS);
 
     return () => {
       window.clearInterval(intervalId);
+    };
+  }, [isOnline]);
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    const eventSource = new EventSource('/api/events');
+
+    const handleSyncEvent = () => {
+      void syncRef.current();
+    };
+
+    eventSource.addEventListener('sync', handleSyncEvent);
+
+    return () => {
+      eventSource.removeEventListener('sync', handleSyncEvent);
+      eventSource.close();
     };
   }, [isOnline]);
 
