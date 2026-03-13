@@ -6,14 +6,18 @@ import fs from 'fs';
 
 const app = express();
 const PORT = 3000;
+const configuredDbPath = process.env.DB_PATH;
 
-// Ensure db directory exists
-const dbDir = path.join(process.cwd(), 'db');
+const dbPath = configuredDbPath
+  ? path.resolve(configuredDbPath)
+  : path.join(process.cwd(), 'db', 'territories.db');
+
+const dbDir = path.dirname(dbPath);
 if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir);
+  fs.mkdirSync(dbDir, { recursive: true });
 }
 
-const db = new Database(path.join(dbDir, 'territories.db'));
+const db = new Database(dbPath);
 
 // Initialize DB
 db.exec(`
