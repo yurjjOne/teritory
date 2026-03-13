@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react';
-import { db, Mutation } from '../db';
+import { useEffect, useRef, useState } from 'react';
+import { db } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
+
+const SYNC_POLL_INTERVAL_MS = 5000;
 
 export function useSync() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState(false);
+  const isSyncingRef = useRef(false);
   const mutations = useLiveQuery(() => db.mutations.toArray());
 
   useEffect(() => {
@@ -21,12 +24,15 @@ export function useSync() {
   }, []);
 
   const sync = async () => {
-    if (!isOnline || isSyncing) return;
+    if (!isOnline || isSyncingRef.current) return;
 
+    isSyncingRef.current = true;
     setIsSyncing(true);
     try {
       // 1. Push mutations
       const pendingMutations = await db.mutations.toArray();
+      let canPullRemoteChanges = true;
+
       if (pendingMutations.length > 0) {
         const response = await fetch('/api/sync', {
           method: 'POST',
@@ -37,17 +43,28 @@ export function useSync() {
         if (response.ok) {
           await db.mutations.bulkDelete(pendingMutations.map((m: any) => m.id));
         } else {
+          canPullRemoteChanges = false;
           console.error('Failed to push mutations');
         }
+      }
+
+      if (!canPullRemoteChanges) {
+        return;
       }
 
       // 2. Pull updates
       const lastSync = parseInt(localStorage.getItem('lastSync') || '0');
       const pullResponse = await fetch(`/api/sync?lastSync=${lastSync}`);
       if (pullResponse.ok) {
-        const { territories, apartments, timestamp } = await pullResponse.json();
+        const { territories, apartments, deletedTerritories, timestamp } = await pullResponse.json();
+        const deletedTerritoryIds = (deletedTerritories || []).map((territory: any) => territory.id);
 
         await db.transaction('rw', db.territories, db.apartments, async () => {
+          if (deletedTerritoryIds.length > 0) {
+            await db.territories.bulkDelete(deletedTerritoryIds);
+            await db.apartments.where('territoryId').anyOf(deletedTerritoryIds).delete();
+          }
+
           if (territories.length > 0) {
             // Filter out deleted territories if we were sending them (though sync usually sends current state)
             // But here we are just putting what server sends.
@@ -63,7 +80,8 @@ export function useSync() {
               mapLink: t.map_link,
               startNumber: t.start_number || 1,
               endNumber: t.end_number || t.apartment_count,
-              createdAt: t.created_at
+              createdAt: t.created_at,
+              updatedAt: t.updated_at || t.created_at
             })));
           }
           if (apartments.length > 0) {
@@ -97,6 +115,7 @@ export function useSync() {
     } catch (error) {
       console.error('Sync error:', error);
     } finally {
+      isSyncingRef.current = false;
       setIsSyncing(false);
     }
   };
@@ -104,9 +123,45 @@ export function useSync() {
   // Auto-sync when coming online or when mutations are added
   useEffect(() => {
     if (isOnline) {
-      sync();
+      void sync();
     }
   }, [isOnline, mutations?.length]);
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void sync();
+    }, SYNC_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isOnline]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (navigator.onLine) {
+        void sync();
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        void sync();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isOnline]);
 
   return { isOnline, isSyncing, sync };
 }

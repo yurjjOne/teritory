@@ -8,6 +8,7 @@ export interface Territory {
   startNumber: number;
   endNumber: number;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface Comment {
