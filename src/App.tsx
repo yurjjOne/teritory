@@ -3,21 +3,33 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import { Home } from './pages/Home';
 import { TerritoryDetail } from './pages/TerritoryDetail';
 import { AdminLogin } from './components/AdminLogin';
+import { GroupAccessGate } from './components/GroupAccessGate';
 import { useSync } from './hooks/useSync';
-import { Wifi, WifiOff } from 'lucide-react';
+import { LogOut, Wifi, WifiOff } from 'lucide-react';
+import {
+  GroupAccessSession,
+  authenticateAdmin,
+  clearGroupAccessSession,
+  loadGroupAccessSession,
+  saveGroupAccessSession,
+} from './auth';
 
-export default function App() {
+interface AuthenticatedAppProps {
+  session: GroupAccessSession;
+  onLogoutGroup: () => void;
+}
+
+function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
   const [isAdmin, setIsAdmin] = useState(false);
   const { isOnline, isSyncing } = useSync();
 
   const handleLogin = (password: string) => {
-    // Simple hardcoded password for demo
-    if (password === 'admin123') {
+    if (authenticateAdmin(password)) {
       setIsAdmin(true);
       return true;
     }
@@ -28,6 +40,11 @@ export default function App() {
     setIsAdmin(false);
   };
 
+  const handleGroupLogout = () => {
+    setIsAdmin(false);
+    onLogoutGroup();
+  };
+
   return (
     <Router>
       <div className="min-h-screen bg-gray-50 font-sans text-gray-900">
@@ -36,7 +53,10 @@ export default function App() {
             <Link to="/" className="text-xl font-bold text-blue-600 flex items-center">
               Записи Території
             </Link>
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-3">
+              <div className="hidden md:inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-600">
+                {session.groupLabel}
+              </div>
               <div className="flex items-center text-sm text-gray-500">
                 {isSyncing ? (
                   <span className="animate-pulse text-blue-500 mr-2">Синхронізація...</span>
@@ -47,6 +67,13 @@ export default function App() {
                 )}
                 <span className="hidden sm:inline">{isOnline ? 'Онлайн' : 'Офлайн'}</span>
               </div>
+              <button
+                onClick={handleGroupLogout}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100"
+              >
+                <LogOut size={16} />
+                <span className="hidden sm:inline">Вийти</span>
+              </button>
             </div>
           </div>
         </nav>
@@ -66,4 +93,24 @@ export default function App() {
       </div>
     </Router>
   );
+}
+
+export default function App() {
+  const [groupSession, setGroupSession] = useState<GroupAccessSession | null>(() => loadGroupAccessSession());
+
+  const handleUnlock = (session: GroupAccessSession) => {
+    saveGroupAccessSession(session);
+    setGroupSession(session);
+  };
+
+  const handleLogoutGroup = () => {
+    clearGroupAccessSession();
+    setGroupSession(null);
+  };
+
+  if (!groupSession) {
+    return <GroupAccessGate onUnlock={handleUnlock} />;
+  }
+
+  return <AuthenticatedApp session={groupSession} onLogoutGroup={handleLogoutGroup} />;
 }

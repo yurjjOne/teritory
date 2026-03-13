@@ -24,7 +24,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
       setPassword('');
       setError('');
     } else {
-      setError('Invalid password');
+      setError('Невірний пароль адміністратора');
     }
   };
 
