@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Territory } from '../db';
-import { createTerritory, deleteTerritory, fetchTerritories } from '../api';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { createTerritory, deleteTerritory } from '../api';
+import { db } from '../db';
+import { cacheTerritoriesFromServer } from '../offlineSync';
 import { TerritoryCard } from '../components/TerritoryCard';
 import { DeleteConfirmationModal } from '../components/DeleteConfirmationModal';
 import { Plus, X } from 'lucide-react';
@@ -13,7 +15,7 @@ interface HomeProps {
 }
 
 export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) => {
-  const [territories, setTerritories] = useState<Territory[]>([]);
+  const territories = useLiveQuery(() => db.territories.orderBy('createdAt').reverse().toArray(), [], []);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -26,31 +28,51 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
     endNumber: 10,
   });
 
-  const loadTerritories = async () => {
-    setIsLoading(true);
-
-    try {
-      const serverTerritories = await fetchTerritories();
-      setTerritories(serverTerritories);
-      setError('');
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Не вдалося завантажити території');
-    } finally {
+  useEffect(() => {
+    if (territories.length > 0) {
       setIsLoading(false);
+
+      if (!isOnline) {
+        setError('');
+      }
     }
-  };
+  }, [isOnline, territories]);
 
   useEffect(() => {
-    if (!isOnline && territories.length === 0) {
-      setIsLoading(false);
-      setError('Немає з’єднання із сервером');
-      return;
-    }
+    let isCancelled = false;
 
-    if (isOnline) {
-      void loadTerritories();
-    }
-  }, [syncVersion, isOnline]);
+    const refreshTerritories = async () => {
+      if (!isOnline) {
+        if (!isCancelled) {
+          setIsLoading(false);
+          setError(territories.length === 0 ? 'Немає з’єднання із сервером' : '');
+        }
+        return;
+      }
+
+      try {
+        await cacheTerritoriesFromServer();
+
+        if (!isCancelled) {
+          setError('');
+        }
+      } catch (loadError) {
+        if (!isCancelled && territories.length === 0) {
+          setError(loadError instanceof Error ? loadError.message : 'Не вдалося завантажити території');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void refreshTerritories();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isOnline, syncVersion]);
 
   const handleAddTerritory = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,7 +82,12 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
       return;
     }
 
-    if (!newTerritory.name || !Number.isInteger(newTerritory.startNumber) || !Number.isInteger(newTerritory.endNumber) || newTerritory.endNumber < newTerritory.startNumber) {
+    if (
+      !newTerritory.name ||
+      !Number.isInteger(newTerritory.startNumber) ||
+      !Number.isInteger(newTerritory.endNumber) ||
+      newTerritory.endNumber < newTerritory.startNumber
+    ) {
       setError('Перевірте назву і діапазон квартир');
       return;
     }
@@ -75,7 +102,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
         endNumber: newTerritory.endNumber,
       });
 
-      setTerritories((currentValue) => [territory, ...currentValue]);
+      await db.territories.put(territory);
       setError('');
       setIsAdding(false);
       setNewTerritory({ name: '', imageUrl: '', mapLink: '', startNumber: 1, endNumber: 10 });
@@ -100,7 +127,10 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
 
     try {
       await deleteTerritory(territoryToDelete);
-      setTerritories((currentValue) => currentValue.filter((territory) => territory.id !== territoryToDelete));
+      await db.transaction('rw', db.territories, db.apartments, async () => {
+        await db.territories.delete(territoryToDelete);
+        await db.apartments.where('territoryId').equals(territoryToDelete).delete();
+      });
       setTerritoryToDelete(null);
       setError('');
     } catch (deleteError) {
@@ -129,7 +159,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
         </div>
       )}
 
-      {isLoading ? (
+      {isLoading && territories.length === 0 ? (
         <div className="py-12 text-center text-gray-500">Завантаження територій...</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

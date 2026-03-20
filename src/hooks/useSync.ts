@@ -1,14 +1,53 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { flushPendingMutations } from '../offlineSync';
 
-const FALLBACK_REFRESH_INTERVAL_MS = 30000;
+interface RunSyncOptions {
+  refreshServerData?: boolean;
+}
 
 export function useSync() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [syncVersion, setSyncVersion] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
+  const syncChainRef = useRef<Promise<void>>(Promise.resolve());
+
+  const runSync = useCallback(async ({ refreshServerData = false }: RunSyncOptions = {}) => {
+    if (!navigator.onLine) {
+      return false;
+    }
+
+    const runTask = async () => {
+      setIsSyncing(true);
+
+      try {
+        const result = await flushPendingMutations();
+
+        if (refreshServerData && result.pendingCount === 0) {
+          setSyncVersion((currentValue) => currentValue + 1);
+        }
+      } finally {
+        setIsSyncing(false);
+      }
+    };
+
+    syncChainRef.current = syncChainRef.current.catch(() => undefined).then(runTask);
+    await syncChainRef.current;
+    return true;
+  }, []);
 
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
+    if (navigator.onLine) {
+      void runSync();
+    }
+  }, [runSync]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      void runSync({ refreshServerData: true });
+    };
+
     const handleOffline = () => {
       setIsOnline(false);
       setIsRealtimeConnected(false);
@@ -21,23 +60,28 @@ export function useSync() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [runSync]);
 
   useEffect(() => {
     if (!isOnline) {
       return;
     }
 
-    setSyncVersion((currentValue) => currentValue + 1);
-
     const eventSource = new EventSource('/api/events');
+    let hasConnectedOnce = false;
 
     const handleConnected = () => {
       setIsRealtimeConnected(true);
+
+      if (hasConnectedOnce) {
+        void runSync({ refreshServerData: true });
+      }
+
+      hasConnectedOnce = true;
     };
 
     const handleSync = () => {
-      setSyncVersion((currentValue) => currentValue + 1);
+      void runSync({ refreshServerData: true });
     };
 
     eventSource.addEventListener('connected', handleConnected);
@@ -46,44 +90,18 @@ export function useSync() {
       setIsRealtimeConnected(false);
     };
 
-    const intervalId = window.setInterval(() => {
-      setSyncVersion((currentValue) => currentValue + 1);
-    }, FALLBACK_REFRESH_INTERVAL_MS);
-
     return () => {
-      window.clearInterval(intervalId);
       eventSource.removeEventListener('connected', handleConnected);
       eventSource.removeEventListener('sync', handleSync);
       eventSource.close();
       setIsRealtimeConnected(false);
     };
-  }, [isOnline]);
-
-  useEffect(() => {
-    const handleFocus = () => {
-      if (navigator.onLine) {
-        setSyncVersion((currentValue) => currentValue + 1);
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine) {
-        setSyncVersion((currentValue) => currentValue + 1);
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
+  }, [isOnline, runSync]);
 
   return {
     isOnline,
-    isSyncing: isOnline && !isRealtimeConnected,
+    isSyncing,
+    isRealtimeConnected,
     syncVersion,
   };
 }

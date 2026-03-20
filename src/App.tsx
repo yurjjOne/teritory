@@ -10,7 +10,7 @@ import { TerritoryDetail } from './pages/TerritoryDetail';
 import { AdminLogin } from './components/AdminLogin';
 import { GroupAccessGate } from './components/GroupAccessGate';
 import { useSync } from './hooks/useSync';
-import { LogOut, Wifi, WifiOff } from 'lucide-react';
+import { LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import {
   GroupAccessSession,
   authenticateAdmin,
@@ -58,14 +58,22 @@ function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
                 {session.groupLabel}
               </div>
               <div className="flex items-center text-sm text-gray-500">
-                {isSyncing ? (
-                  <span className="animate-pulse text-blue-500 mr-2">Підключення...</span>
-                ) : isOnline ? (
-                  <Wifi size={16} className="text-green-500 mr-1" />
+                {!isOnline ? (
+                  <>
+                    <WifiOff size={16} className="text-red-500 mr-1" />
+                    <span className="hidden sm:inline">Офлайн</span>
+                  </>
+                ) : isSyncing ? (
+                  <>
+                    <RefreshCw size={16} className="text-blue-500 mr-1" />
+                    <span className="hidden sm:inline">Синхронізація</span>
+                  </>
                 ) : (
-                  <WifiOff size={16} className="text-red-500 mr-1" />
+                  <>
+                    <Wifi size={16} className="text-green-500 mr-1" />
+                    <span className="hidden sm:inline">Онлайн</span>
+                  </>
                 )}
-                <span className="hidden sm:inline">{isOnline ? 'Онлайн' : 'Офлайн'}</span>
               </div>
               <button
                 onClick={handleGroupLogout}

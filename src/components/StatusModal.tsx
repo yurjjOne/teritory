@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Apartment, Comment } from '../db';
 import { motion, AnimatePresence } from 'motion/react';
 import { Check, X, PhoneOff, BellOff, Save, Trash2 } from 'lucide-react';
@@ -7,7 +7,12 @@ interface StatusModalProps {
   isOpen: boolean;
   onClose: () => void;
   apartment: Apartment | null;
-  onSave: (status: Apartment['status'], noIntercom: boolean, noBell: boolean, comments: Comment[]) => void;
+  onSave: (
+    status: Apartment['status'],
+    noIntercom: boolean,
+    noBell: boolean,
+    comments: Comment[]
+  ) => Promise<boolean>;
 }
 
 export const StatusModal: React.FC<StatusModalProps> = ({
@@ -21,6 +26,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   const [noBell, setNoBell] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [comments, setComments] = useState<Comment[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (apartment) {
@@ -29,10 +35,15 @@ export const StatusModal: React.FC<StatusModalProps> = ({
       setNoBell(apartment.noBell || false);
       setComments(apartment.comments || []);
       setNewComment('');
+      setIsSaving(false);
     }
   }, [apartment]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (isSaving) {
+      return;
+    }
+
     let updatedComments = [...comments];
     if (newComment.trim()) {
       updatedComments.unshift({
@@ -41,12 +52,18 @@ export const StatusModal: React.FC<StatusModalProps> = ({
         timestamp: Date.now(),
       });
     }
-    onSave(status, noIntercom, noBell, updatedComments);
-    onClose();
+
+    setIsSaving(true);
+    const wasSaved = await onSave(status, noIntercom, noBell, updatedComments);
+    setIsSaving(false);
+
+    if (wasSaved) {
+      onClose();
+    }
   };
 
   const handleDeleteComment = (id: string) => {
-    setComments(comments.filter(c => c.id !== id));
+    setComments(comments.filter((comment) => comment.id !== id));
   };
 
   if (!isOpen || !apartment) return null;
@@ -70,7 +87,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
         >
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold">Квартира {apartment.number}</h2>
-            <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700" disabled={isSaving}>
               <X size={24} />
             </button>
           </div>
@@ -133,9 +150,10 @@ export const StatusModal: React.FC<StatusModalProps> = ({
                       })}
                     </p>
                   </div>
-                  <button 
+                  <button
                     onClick={() => handleDeleteComment(comment.id)}
                     className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                    disabled={isSaving}
                   >
                     <Trash2 size={16} />
                   </button>
@@ -158,11 +176,12 @@ export const StatusModal: React.FC<StatusModalProps> = ({
           </div>
 
           <button
-            onClick={handleSave}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl flex items-center justify-center transition-colors"
+            onClick={() => void handleSave()}
+            disabled={isSaving}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-bold py-4 rounded-xl flex items-center justify-center transition-colors"
           >
             <Save size={20} className="mr-2" />
-            Зберегти зміни
+            {isSaving ? 'Збереження...' : 'Зберегти зміни'}
           </button>
         </motion.div>
       </motion.div>

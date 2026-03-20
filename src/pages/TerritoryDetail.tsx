@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { useParams, Link } from 'react-router-dom';
-import { fetchTerritoryDetail, updateApartment } from '../api';
-import { Apartment, Comment, Territory } from '../db';
+import { Apartment, Comment, db } from '../db';
+import { cacheTerritoryDetailFromServer, flushPendingMutations, saveApartmentLocally } from '../offlineSync';
 import { ApartmentGrid } from '../components/ApartmentGrid';
 import { StatusModal } from '../components/StatusModal';
 import { ArrowLeft, MapPin } from 'lucide-react';
@@ -13,49 +14,108 @@ interface TerritoryDetailProps {
 
 export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, isOnline }) => {
   const { id } = useParams<{ id: string }>();
-  const [territory, setTerritory] = useState<Territory | null>(null);
-  const [apartments, setApartments] = useState<Apartment[]>([]);
+  const territory = useLiveQuery(() => (id ? db.territories.get(id) : undefined), [id]);
+  const apartments = useLiveQuery(
+    () => (id ? db.apartments.where('territoryId').equals(id).sortBy('number') : Promise.resolve([])),
+    [id],
+    []
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedApartment, setSelectedApartment] = useState<Apartment | null>(null);
+  const [notice, setNotice] = useState('');
+  const [selectedApartmentId, setSelectedApartmentId] = useState<string | null>(null);
+  const lastScrollPositionRef = useRef(0);
 
-  const loadTerritory = async () => {
-    if (!id) {
-      setError('Територію не знайдено');
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      const payload = await fetchTerritoryDetail(id);
-      setTerritory(payload.territory);
-      setApartments(payload.apartments);
-      setError('');
-    } catch (loadError) {
-      setTerritory(null);
-      setApartments([]);
-      setError(loadError instanceof Error ? loadError.message : 'Не вдалося завантажити територію');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const selectedApartment = useMemo(
+    () => apartments.find((apartment) => apartment.id === selectedApartmentId) ?? null,
+    [apartments, selectedApartmentId]
+  );
 
   useEffect(() => {
-    if (!isOnline && !territory) {
-      setError('Немає з’єднання із сервером');
+    if (territory) {
       setIsLoading(false);
-      return;
-    }
 
-    if (isOnline) {
-      void loadTerritory();
+      if (!isOnline) {
+        setError('');
+      }
     }
-  }, [id, syncVersion, isOnline]);
+  }, [isOnline, territory]);
+
+  useEffect(() => {
+    if (isOnline) {
+      setNotice('');
+    }
+  }, [isOnline, syncVersion]);
+
+  useEffect(() => {
+    setIsLoading(true);
+    setError('');
+    setNotice('');
+    setSelectedApartmentId(null);
+  }, [id]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const refreshTerritory = async () => {
+      if (!id) {
+        if (!isCancelled) {
+          setError('Територію не знайдено');
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      if (!isOnline) {
+        if (!isCancelled) {
+          setIsLoading(false);
+          setError(territory ? '' : 'Немає з’єднання із сервером');
+        }
+        return;
+      }
+
+      try {
+        await cacheTerritoryDetailFromServer(id);
+
+        if (!isCancelled) {
+          setError('');
+        }
+      } catch (loadError) {
+        if (!isCancelled && !territory) {
+          setError(loadError instanceof Error ? loadError.message : 'Не вдалося завантажити територію');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void refreshTerritory();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [id, isOnline, syncVersion]);
+
+  const restoreScrollPosition = () => {
+    const scrollTop = lastScrollPositionRef.current;
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: scrollTop });
+      });
+    });
+  };
 
   const handleSelectApartment = (apartment: Apartment) => {
-    setSelectedApartment(apartment);
+    lastScrollPositionRef.current = window.scrollY;
+    setSelectedApartmentId(apartment.id);
+  };
+
+  const handleCloseModal = () => {
+    setSelectedApartmentId(null);
+    restoreScrollPosition();
   };
 
   const handleSaveStatus = async (
@@ -65,33 +125,42 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
     comments: Comment[]
   ) => {
     if (!selectedApartment) {
-      return;
+      return false;
     }
 
-    if (!isOnline) {
-      setError('Для збереження змін потрібен інтернет');
-      return;
-    }
+    const updatedApartment: Apartment = {
+      ...selectedApartment,
+      status,
+      noIntercom,
+      noBell,
+      comments,
+      updatedAt: Date.now(),
+    };
 
     try {
-      const updatedApartment = await updateApartment(selectedApartment.id, {
-        status,
-        noIntercom,
-        noBell,
-        comments,
-      });
+      await saveApartmentLocally(updatedApartment);
 
-      setApartments((currentValue) =>
-        currentValue.map((apartment) => (apartment.id === updatedApartment.id ? updatedApartment : apartment))
-      );
-      setSelectedApartment(updatedApartment);
+      if (isOnline) {
+        const syncResult = await flushPendingMutations();
+
+        if (syncResult.pendingCount === 0) {
+          setNotice('');
+        } else {
+          setNotice('Зміни збережено на пристрої. Вони відправляться на сервер, щойно з’явиться інтернет.');
+        }
+      } else {
+        setNotice('Зміни збережено на пристрої. Вони відправляться на сервер, щойно з’явиться інтернет.');
+      }
+
       setError('');
+      return true;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Не вдалося зберегти зміни квартири');
+      return false;
     }
   };
 
-  if (isLoading) {
+  if (isLoading && !territory) {
     return <div className="p-8 text-center text-gray-500">Завантаження території...</div>;
   }
 
@@ -120,6 +189,12 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
         </div>
       )}
 
+      {notice && (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {notice}
+        </div>
+      )}
+
       <header className="mb-6 flex items-center justify-between">
         <Link to="/" className="text-gray-600 hover:text-gray-900 flex items-center">
           <ArrowLeft size={24} className="mr-2" />
@@ -140,7 +215,7 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
 
       <StatusModal
         isOpen={!!selectedApartment}
-        onClose={() => setSelectedApartment(null)}
+        onClose={handleCloseModal}
         apartment={selectedApartment}
         onSave={handleSaveStatus}
       />
