@@ -41,6 +41,40 @@ function broadcastSyncEvent(reason: 'mutation' | 'heartbeat' = 'mutation') {
   }
 }
 
+function parseComments(rawValue: string | null) {
+  try {
+    return JSON.parse(rawValue || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function serializeTerritory(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    imageUrl: row.image_url || '',
+    mapLink: row.map_link || '',
+    startNumber: row.start_number || 1,
+    endNumber: row.end_number || row.apartment_count || row.start_number || 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function serializeApartment(row: any) {
+  return {
+    id: row.id,
+    territoryId: row.territory_id,
+    number: row.number,
+    status: row.status,
+    noIntercom: !!row.no_intercom,
+    noBell: !!row.no_bell,
+    comments: parseComments(row.comments),
+    updatedAt: row.updated_at,
+  };
+}
+
 // Initialize DB
 db.exec(`
   CREATE TABLE IF NOT EXISTS territories (
@@ -115,8 +149,160 @@ app.get('/api/events', (req, res) => {
   });
 });
 
+app.get('/api/territories', (req, res) => {
+  const territories = db
+    .prepare('SELECT * FROM territories ORDER BY created_at DESC')
+    .all()
+    .map(serializeTerritory);
+
+  res.json({ territories });
+});
+
+app.post('/api/territories', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const name = String(req.body?.name || '').trim();
+  const imageUrl = String(req.body?.imageUrl || '').trim();
+  const mapLink = String(req.body?.mapLink || '').trim();
+  const startNumber = Number(req.body?.startNumber);
+  const endNumber = Number(req.body?.endNumber);
+
+  if (!id || !name || !Number.isInteger(startNumber) || !Number.isInteger(endNumber) || endNumber < startNumber) {
+    return res.status(400).json({ error: 'Некоректні дані території' });
+  }
+
+  const existingTerritory = db.prepare('SELECT id FROM territories WHERE id = ?').get(id);
+  if (existingTerritory) {
+    return res.status(409).json({ error: 'Територія з таким ідентифікатором уже існує' });
+  }
+
+  const now = Date.now();
+  const insertTerritory = db.prepare(`
+    INSERT INTO territories (id, name, image_url, map_link, start_number, end_number, apartment_count, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertApartment = db.prepare(`
+    INSERT INTO apartments (id, territory_id, number, status, no_intercom, no_bell, comments, updated_at)
+    VALUES (?, ?, ?, 'default', 0, 0, '[]', ?)
+  `);
+  const clearDeletedTerritory = db.prepare('DELETE FROM deleted_territories WHERE id = ?');
+
+  const transaction = db.transaction(() => {
+    insertTerritory.run(
+      id,
+      name,
+      imageUrl,
+      mapLink,
+      startNumber,
+      endNumber,
+      endNumber - startNumber + 1,
+      now,
+      now
+    );
+
+    for (let apartmentNumber = startNumber; apartmentNumber <= endNumber; apartmentNumber += 1) {
+      insertApartment.run(`${id}-${apartmentNumber}`, id, apartmentNumber, now);
+    }
+
+    clearDeletedTerritory.run(id);
+  });
+
+  try {
+    transaction();
+    const territoryRow = db.prepare('SELECT * FROM territories WHERE id = ?').get(id);
+    broadcastSyncEvent();
+    return res.status(201).json({ territory: serializeTerritory(territoryRow) });
+  } catch (error) {
+    console.error('Create territory error:', error);
+    return res.status(500).json({ error: 'Не вдалося створити територію' });
+  }
+});
+
+app.delete('/api/territories/:id', (req, res) => {
+  const territoryId = req.params.id;
+  const existingTerritory = db.prepare('SELECT id FROM territories WHERE id = ?').get(territoryId);
+
+  if (!existingTerritory) {
+    return res.status(404).json({ error: 'Територію не знайдено' });
+  }
+
+  const deleteTerritory = db.prepare('DELETE FROM territories WHERE id = ?');
+  const deleteApartments = db.prepare('DELETE FROM apartments WHERE territory_id = ?');
+  const upsertDeletedTerritory = db.prepare(`
+    INSERT OR REPLACE INTO deleted_territories (id, deleted_at)
+    VALUES (?, ?)
+  `);
+
+  const transaction = db.transaction(() => {
+    deleteApartments.run(territoryId);
+    deleteTerritory.run(territoryId);
+    upsertDeletedTerritory.run(territoryId, Date.now());
+  });
+
+  try {
+    transaction();
+    broadcastSyncEvent();
+    return res.status(204).send();
+  } catch (error) {
+    console.error('Delete territory error:', error);
+    return res.status(500).json({ error: 'Не вдалося видалити територію' });
+  }
+});
+
+app.get('/api/territories/:id', (req, res) => {
+  const territoryId = req.params.id;
+  const territoryRow = db.prepare('SELECT * FROM territories WHERE id = ?').get(territoryId);
+
+  if (!territoryRow) {
+    return res.status(404).json({ error: 'Територію не знайдено' });
+  }
+
+  const apartmentRows = db
+    .prepare('SELECT * FROM apartments WHERE territory_id = ? ORDER BY number ASC')
+    .all(territoryId);
+
+  return res.json({
+    territory: serializeTerritory(territoryRow),
+    apartments: apartmentRows.map(serializeApartment),
+  });
+});
+
+app.put('/api/apartments/:id', (req, res) => {
+  const apartmentId = req.params.id;
+  const apartmentRow = db.prepare('SELECT * FROM apartments WHERE id = ?').get(apartmentId);
+
+  if (!apartmentRow) {
+    return res.status(404).json({ error: 'Квартиру не знайдено' });
+  }
+
+  const status = req.body?.status;
+  const noIntercom = !!req.body?.noIntercom;
+  const noBell = !!req.body?.noBell;
+  const comments = Array.isArray(req.body?.comments) ? req.body.comments : [];
+
+  if (!['default', 'success', 'refusal'].includes(status)) {
+    return res.status(400).json({ error: 'Некоректний статус квартири' });
+  }
+
+  db.prepare(`
+    UPDATE apartments
+    SET status = ?, no_intercom = ?, no_bell = ?, comments = ?, updated_at = ?
+    WHERE id = ?
+  `).run(status, noIntercom ? 1 : 0, noBell ? 1 : 0, JSON.stringify(comments), Date.now(), apartmentId);
+
+  const updatedApartment = db.prepare('SELECT * FROM apartments WHERE id = ?').get(apartmentId);
+  broadcastSyncEvent();
+
+  return res.json({ apartment: serializeApartment(updatedApartment) });
+});
+
 // Get all data (for initial sync)
-app.get('/api/sync', (req, res) => {
+app.all('/api/sync', (req, res) => {
+  return res.status(410).json({
+    error: 'Клієнт оновлено. Перезавантажте сторінку, щоб перейти на актуальну онлайн-версію.',
+  });
+});
+
+app.get('/api/sync-legacy', (req, res) => {
   const lastSync = parseInt(req.query.lastSync as string) || 0;
   
   const territories = db.prepare('SELECT * FROM territories WHERE updated_at > ?').all(lastSync);
@@ -127,7 +313,7 @@ app.get('/api/sync', (req, res) => {
 });
 
 // Push mutations
-app.post('/api/sync', (req, res) => {
+app.post('/api/sync-legacy', (req, res) => {
   const { mutations } = req.body;
   
   if (!mutations || !Array.isArray(mutations)) {

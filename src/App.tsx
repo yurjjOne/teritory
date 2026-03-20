@@ -26,7 +26,7 @@ interface AuthenticatedAppProps {
 
 function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
   const [isAdmin, setIsAdmin] = useState(false);
-  const { isOnline, isSyncing } = useSync();
+  const { isOnline, isSyncing, syncVersion } = useSync();
 
   const handleLogin = (password: string) => {
     if (authenticateAdmin(password)) {
@@ -59,7 +59,7 @@ function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
               </div>
               <div className="flex items-center text-sm text-gray-500">
                 {isSyncing ? (
-                  <span className="animate-pulse text-blue-500 mr-2">Синхронізація...</span>
+                  <span className="animate-pulse text-blue-500 mr-2">Підключення...</span>
                 ) : isOnline ? (
                   <Wifi size={16} className="text-green-500 mr-1" />
                 ) : (
@@ -80,8 +80,8 @@ function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
 
         <main>
           <Routes>
-            <Route path="/" element={<Home isAdmin={isAdmin} />} />
-            <Route path="/territory/:id" element={<TerritoryDetail />} />
+            <Route path="/" element={<Home isAdmin={isAdmin} syncVersion={syncVersion} isOnline={isOnline} />} />
+            <Route path="/territory/:id" element={<TerritoryDetail syncVersion={syncVersion} isOnline={isOnline} />} />
           </Routes>
         </main>
 

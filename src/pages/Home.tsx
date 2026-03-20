@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db, Territory } from '../db';
+import React, { useEffect, useState } from 'react';
+import { Territory } from '../db';
+import { createTerritory, deleteTerritory, fetchTerritories } from '../api';
 import { TerritoryCard } from '../components/TerritoryCard';
 import { DeleteConfirmationModal } from '../components/DeleteConfirmationModal';
 import { Plus, X } from 'lucide-react';
@@ -8,10 +8,14 @@ import { motion, AnimatePresence } from 'motion/react';
 
 interface HomeProps {
   isAdmin: boolean;
+  syncVersion: number;
+  isOnline: boolean;
 }
 
-export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
-  const territories = useLiveQuery(() => db.territories.orderBy('createdAt').reverse().toArray());
+export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) => {
+  const [territories, setTerritories] = useState<Territory[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [territoryToDelete, setTerritoryToDelete] = useState<string | null>(null);
   const [newTerritory, setNewTerritory] = useState({
@@ -22,49 +26,62 @@ export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
     endNumber: 10,
   });
 
+  const loadTerritories = async () => {
+    setIsLoading(true);
+
+    try {
+      const serverTerritories = await fetchTerritories();
+      setTerritories(serverTerritories);
+      setError('');
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Не вдалося завантажити території');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOnline && territories.length === 0) {
+      setIsLoading(false);
+      setError('Немає з’єднання із сервером');
+      return;
+    }
+
+    if (isOnline) {
+      void loadTerritories();
+    }
+  }, [syncVersion, isOnline]);
+
   const handleAddTerritory = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTerritory.name || newTerritory.endNumber < newTerritory.startNumber) return;
 
-    const id = crypto.randomUUID();
-    const territory: Territory = {
-      id,
-      name: newTerritory.name,
-      imageUrl: newTerritory.imageUrl || 'https://picsum.photos/seed/territory/800/600',
-      mapLink: newTerritory.mapLink,
-      startNumber: newTerritory.startNumber,
-      endNumber: newTerritory.endNumber,
-      createdAt: Date.now(),
-    };
+    if (!isOnline) {
+      setError('Для створення території потрібен інтернет');
+      return;
+    }
 
-    await db.transaction('rw', db.territories, db.apartments, db.mutations, async () => {
-      await db.territories.add(territory);
-      await db.mutations.add({
-        type: 'territory',
-        data: territory,
-        timestamp: Date.now(),
+    if (!newTerritory.name || !Number.isInteger(newTerritory.startNumber) || !Number.isInteger(newTerritory.endNumber) || newTerritory.endNumber < newTerritory.startNumber) {
+      setError('Перевірте назву і діапазон квартир');
+      return;
+    }
+
+    try {
+      const territory = await createTerritory({
+        id: crypto.randomUUID(),
+        name: newTerritory.name,
+        imageUrl: newTerritory.imageUrl || 'https://picsum.photos/seed/territory/800/600',
+        mapLink: newTerritory.mapLink,
+        startNumber: newTerritory.startNumber,
+        endNumber: newTerritory.endNumber,
       });
 
-      // Initialize apartments
-      const apartments = [];
-      for (let i = territory.startNumber; i <= territory.endNumber; i++) {
-        apartments.push({
-          id: `${id}-${i}`,
-          territoryId: id,
-          number: i,
-          status: 'default',
-          noIntercom: false,
-          noBell: false,
-          comments: [],
-          updatedAt: Date.now(),
-        });
-      }
-      // Bulk add apartments
-      await db.apartments.bulkAdd(apartments as any);
-    });
-
-    setIsAdding(false);
-    setNewTerritory({ name: '', imageUrl: '', mapLink: '', startNumber: 1, endNumber: 10 });
+      setTerritories((currentValue) => [territory, ...currentValue]);
+      setError('');
+      setIsAdding(false);
+      setNewTerritory({ name: '', imageUrl: '', mapLink: '', startNumber: 1, endNumber: 10 });
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : 'Не вдалося створити територію');
+    }
   };
 
   const handleDeleteClick = (id: string) => {
@@ -72,17 +89,22 @@ export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
   };
 
   const confirmDelete = async () => {
-    if (territoryToDelete) {
-      await db.transaction('rw', db.territories, db.apartments, db.mutations, async () => {
-        await db.territories.delete(territoryToDelete);
-        await db.apartments.where('territoryId').equals(territoryToDelete).delete();
-        await db.mutations.add({
-          type: 'territory',
-          data: { id: territoryToDelete, _deleted: true }, // Mark as deleted for sync
-          timestamp: Date.now(),
-        });
-      });
+    if (!territoryToDelete) {
+      return;
+    }
+
+    if (!isOnline) {
+      setError('Для видалення території потрібен інтернет');
+      return;
+    }
+
+    try {
+      await deleteTerritory(territoryToDelete);
+      setTerritories((currentValue) => currentValue.filter((territory) => territory.id !== territoryToDelete));
       setTerritoryToDelete(null);
+      setError('');
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Не вдалося видалити територію');
     }
   };
 
@@ -101,22 +123,32 @@ export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
         )}
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {territories?.map((territory) => (
-          <TerritoryCard 
-            key={territory.id} 
-            {...territory} 
-            apartmentCount={territory.endNumber - territory.startNumber + 1}
-            isAdmin={isAdmin}
-            onDelete={handleDeleteClick}
-          />
-        ))}
-        {territories?.length === 0 && (
-          <div className="col-span-full text-center py-12 text-gray-500">
-            Територій не знайдено. {isAdmin ? 'Додайте нову територію.' : 'Попросіть адміністратора додати територію.'}
-          </div>
-        )}
-      </div>
+      {error && (
+        <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="py-12 text-center text-gray-500">Завантаження територій...</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {territories.map((territory) => (
+            <TerritoryCard
+              key={territory.id}
+              {...territory}
+              apartmentCount={territory.endNumber - territory.startNumber + 1}
+              isAdmin={isAdmin}
+              onDelete={handleDeleteClick}
+            />
+          ))}
+          {territories.length === 0 && (
+            <div className="col-span-full text-center py-12 text-gray-500">
+              Територій не знайдено. {isAdmin ? 'Додайте нову територію.' : 'Попросіть адміністратора додати територію.'}
+            </div>
+          )}
+        </div>
+      )}
 
       <DeleteConfirmationModal
         isOpen={!!territoryToDelete}
@@ -179,7 +211,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
                     placeholder="https://maps.google.com/..."
                   />
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Квартира від</label>
@@ -188,7 +220,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
                       required
                       min="1"
                       value={newTerritory.startNumber}
-                      onChange={(e) => setNewTerritory({ ...newTerritory, startNumber: parseInt(e.target.value) })}
+                      onChange={(e) => setNewTerritory({ ...newTerritory, startNumber: Number(e.target.value) })}
                       className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                   </div>
@@ -199,7 +231,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin }) => {
                       required
                       min={newTerritory.startNumber}
                       value={newTerritory.endNumber}
-                      onChange={(e) => setNewTerritory({ ...newTerritory, endNumber: parseInt(e.target.value) })}
+                      onChange={(e) => setNewTerritory({ ...newTerritory, endNumber: Number(e.target.value) })}
                       className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                   </div>
