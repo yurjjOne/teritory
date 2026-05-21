@@ -3,80 +3,97 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { BrowserRouter as Router, Navigate, Route, Routes, useParams, Link } from 'react-router-dom';
 import { Home } from './pages/Home';
 import { TerritoryDetail } from './pages/TerritoryDetail';
-import { AdminLogin } from './components/AdminLogin';
+import { AdminGroupsPage } from './pages/AdminGroupsPage';
 import { GroupAccessGate } from './components/GroupAccessGate';
 import { useSync } from './hooks/useSync';
 import { LogOut, RefreshCw, Wifi, WifiOff } from 'lucide-react';
-import {
-  GroupAccessSession,
-  authenticateAdmin,
-  clearGroupAccessSession,
-  loadGroupAccessSession,
-  saveGroupAccessSession,
-} from './auth';
+import { AuthSession, fetchAuthSession, getGroupLabel, logout } from './auth';
+import { clearOfflineState } from './offlineSync';
 
 interface AuthenticatedAppProps {
-  session: GroupAccessSession;
-  onLogoutGroup: () => void;
+  session: AuthSession;
+  onLogout: () => Promise<void>;
 }
 
-function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
-  const [isAdmin, setIsAdmin] = useState(false);
+function AdminGroupHomeRoute({ isOnline, syncVersion }: { isOnline: boolean; syncVersion: number }) {
+  const { groupId = '' } = useParams<{ groupId: string }>();
+
+  if (!groupId) {
+    return <Navigate to="/admin" replace />;
+  }
+
+  return (
+    <Home
+      isAdmin
+      syncVersion={syncVersion}
+      isOnline={isOnline}
+      currentGroupId={groupId}
+      currentGroupLabel={getGroupLabel(groupId)}
+      detailPathBuilder={(territoryId) => `/admin/groups/${groupId}/territory/${territoryId}`}
+      backTo="/admin"
+      backLabel="До списку груп"
+    />
+  );
+}
+
+function AdminGroupTerritoryRoute({ isOnline, syncVersion }: { isOnline: boolean; syncVersion: number }) {
+  const { groupId = '' } = useParams<{ groupId: string }>();
+
+  if (!groupId) {
+    return <Navigate to="/admin" replace />;
+  }
+
+  return (
+    <TerritoryDetail
+      syncVersion={syncVersion}
+      isOnline={isOnline}
+      currentGroupId={groupId}
+      backTo={`/admin/groups/${groupId}`}
+      backLabel={getGroupLabel(groupId)}
+    />
+  );
+}
+
+function AuthenticatedApp({ session, onLogout }: AuthenticatedAppProps) {
   const { isOnline, isSyncing, syncVersion } = useSync();
-
-  const handleLogin = (password: string) => {
-    if (authenticateAdmin(password)) {
-      setIsAdmin(true);
-      return true;
-    }
-    return false;
-  };
-
-  const handleLogout = () => {
-    setIsAdmin(false);
-  };
-
-  const handleGroupLogout = () => {
-    setIsAdmin(false);
-    onLogoutGroup();
-  };
+  const isAdmin = session.role === 'admin';
 
   return (
     <Router>
       <div className="min-h-screen bg-gray-50 font-sans text-gray-900">
-        <nav className="bg-white shadow-sm sticky top-0 z-40">
-          <div className="container mx-auto px-4 py-3 flex justify-between items-center">
-            <Link to="/" className="text-xl font-bold text-blue-600 flex items-center">
+        <nav className="sticky top-0 z-40 bg-white shadow-sm">
+          <div className="container mx-auto flex items-center justify-between px-4 py-3">
+            <Link to={isAdmin ? '/admin' : '/'} className="text-xl font-bold text-blue-600 flex items-center">
               Записи Території
             </Link>
             <div className="flex items-center space-x-3">
-              <div className="hidden md:inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-600">
-                {session.groupLabel}
+              <div className="hidden rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-600 md:inline-flex">
+                {session.label}
               </div>
               <div className="flex items-center text-sm text-gray-500">
                 {!isOnline ? (
                   <>
-                    <WifiOff size={16} className="text-red-500 mr-1" />
+                    <WifiOff size={16} className="mr-1 text-red-500" />
                     <span className="hidden sm:inline">Офлайн</span>
                   </>
                 ) : isSyncing ? (
                   <>
-                    <RefreshCw size={16} className="text-blue-500 mr-1" />
+                    <RefreshCw size={16} className="mr-1 text-blue-500" />
                     <span className="hidden sm:inline">Синхронізація</span>
                   </>
                 ) : (
                   <>
-                    <Wifi size={16} className="text-green-500 mr-1" />
+                    <Wifi size={16} className="mr-1 text-green-500" />
                     <span className="hidden sm:inline">Онлайн</span>
                   </>
                 )}
               </div>
               <button
-                onClick={handleGroupLogout}
+                onClick={() => void onLogout()}
                 className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100"
               >
                 <LogOut size={16} />
@@ -88,37 +105,104 @@ function AuthenticatedApp({ session, onLogoutGroup }: AuthenticatedAppProps) {
 
         <main>
           <Routes>
-            <Route path="/" element={<Home isAdmin={isAdmin} syncVersion={syncVersion} isOnline={isOnline} />} />
-            <Route path="/territory/:id" element={<TerritoryDetail syncVersion={syncVersion} isOnline={isOnline} />} />
+            {isAdmin ? (
+              <>
+                <Route path="/" element={<Navigate to="/admin" replace />} />
+                <Route path="/admin" element={<AdminGroupsPage isOnline={isOnline} />} />
+                <Route path="/admin/groups/:groupId" element={<AdminGroupHomeRoute isOnline={isOnline} syncVersion={syncVersion} />} />
+                <Route
+                  path="/admin/groups/:groupId/territory/:id"
+                  element={<AdminGroupTerritoryRoute isOnline={isOnline} syncVersion={syncVersion} />}
+                />
+                <Route path="*" element={<Navigate to="/admin" replace />} />
+              </>
+            ) : (
+              <>
+                <Route
+                  path="/"
+                  element={
+                    <Home
+                      isAdmin={false}
+                      syncVersion={syncVersion}
+                      isOnline={isOnline}
+                      currentGroupId={session.groupId}
+                      currentGroupLabel={session.groupLabel}
+                      detailPathBuilder={(territoryId) => `/territory/${territoryId}`}
+                    />
+                  }
+                />
+                <Route
+                  path="/territory/:id"
+                  element={
+                    <TerritoryDetail
+                      syncVersion={syncVersion}
+                      isOnline={isOnline}
+                      currentGroupId={session.groupId}
+                      backTo="/"
+                      backLabel={session.groupLabel}
+                    />
+                  }
+                />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </>
+            )}
           </Routes>
         </main>
-
-        <AdminLogin
-          isAdmin={isAdmin}
-          onLogin={handleLogin}
-          onLogout={handleLogout}
-        />
       </div>
     </Router>
   );
 }
 
 export default function App() {
-  const [groupSession, setGroupSession] = useState<GroupAccessSession | null>(() => loadGroupAccessSession());
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
 
-  const handleUnlock = (session: GroupAccessSession) => {
-    saveGroupAccessSession(session);
-    setGroupSession(session);
+  useEffect(() => {
+    let isCancelled = false;
+
+    const bootstrapSession = async () => {
+      try {
+        const nextSession = await fetchAuthSession();
+        if (!isCancelled) {
+          setSession(nextSession);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          console.error('Session bootstrap error:', error);
+          setSession(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsBootstrapping(false);
+        }
+      }
+    };
+
+    void bootstrapSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const handleAuthenticated = async (nextSession: AuthSession) => {
+    await clearOfflineState();
+    setSession(nextSession);
   };
 
-  const handleLogoutGroup = () => {
-    clearGroupAccessSession();
-    setGroupSession(null);
+  const handleLogout = async () => {
+    await logout();
+    await clearOfflineState();
+    setSession(null);
   };
 
-  if (!groupSession) {
-    return <GroupAccessGate onUnlock={handleUnlock} />;
+  if (isBootstrapping) {
+    return <div className="p-8 text-center text-gray-500">Завантаження...</div>;
   }
 
-  return <AuthenticatedApp session={groupSession} onLogoutGroup={handleLogoutGroup} />;
+  if (!session) {
+    return <GroupAccessGate onAuthenticated={handleAuthenticated} />;
+  }
+
+  return <AuthenticatedApp session={session} onLogout={handleLogout} />;
 }

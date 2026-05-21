@@ -1,28 +1,32 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { LockKeyhole } from 'lucide-react';
-import { GroupAccessSession, authenticateGroup } from '../auth';
+import { AuthSession, loginWithPassword } from '../auth';
 
 interface GroupAccessGateProps {
-  onUnlock: (session: GroupAccessSession) => void;
+  onAuthenticated: (session: AuthSession) => Promise<void> | void;
 }
 
-export const GroupAccessGate: React.FC<GroupAccessGateProps> = ({ onUnlock }) => {
+export const GroupAccessGate: React.FC<GroupAccessGateProps> = ({ onAuthenticated }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
 
-    const session = authenticateGroup(password);
-    if (!session) {
-      setError('Невірний пароль групи');
-      return;
-    }
+    setIsSubmitting(true);
 
-    setError('');
-    setPassword('');
-    onUnlock(session);
+    try {
+      const session = await loginWithPassword(password);
+      setError('');
+      setPassword('');
+      await onAuthenticated(session);
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : 'Невірний пароль');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -37,13 +41,13 @@ export const GroupAccessGate: React.FC<GroupAccessGateProps> = ({ onUnlock }) =>
             <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-400/20 text-emerald-200">
               <LockKeyhole size={24} />
             </div>
-            <h1 className="text-2xl font-bold">Введіть пароль групи</h1>
+            <h1 className="text-2xl font-bold">Введіть пароль</h1>
             <p className="mt-2 text-sm text-slate-300">
-              Після входу відкриються території вашої групи. Зараз налаштований один пароль для поточного доступу.
+              Пароль групи відкриє тільки її території. Пароль адміністратора відкриє список усіх груп.
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4 px-6 py-6">
+          <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4 px-6 py-6">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-200">Пароль</label>
               <input
@@ -53,6 +57,7 @@ export const GroupAccessGate: React.FC<GroupAccessGateProps> = ({ onUnlock }) =>
                 placeholder="Введіть пароль"
                 className="w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-base text-white outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-300/30"
                 autoFocus
+                disabled={isSubmitting}
               />
             </div>
 
@@ -60,9 +65,10 @@ export const GroupAccessGate: React.FC<GroupAccessGateProps> = ({ onUnlock }) =>
 
             <button
               type="submit"
-              className="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300"
+              disabled={isSubmitting}
+              className="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:opacity-70"
             >
-              Увійти
+              {isSubmitting ? 'Вхід...' : 'Увійти'}
             </button>
           </form>
         </motion.div>

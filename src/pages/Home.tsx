@@ -1,21 +1,40 @@
 import React, { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { Link } from 'react-router-dom';
 import { createTerritory, deleteTerritory } from '../api';
 import { db } from '../db';
 import { cacheTerritoriesFromServer } from '../offlineSync';
 import { TerritoryCard } from '../components/TerritoryCard';
 import { DeleteConfirmationModal } from '../components/DeleteConfirmationModal';
-import { Plus, X } from 'lucide-react';
+import { ArrowLeft, Plus, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface HomeProps {
   isAdmin: boolean;
   syncVersion: number;
   isOnline: boolean;
+  currentGroupId: string;
+  currentGroupLabel: string;
+  detailPathBuilder: (territoryId: string) => string;
+  backTo?: string;
+  backLabel?: string;
 }
 
-export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) => {
-  const territories = useLiveQuery(() => db.territories.orderBy('createdAt').reverse().toArray(), [], []);
+export const Home: React.FC<HomeProps> = ({
+  isAdmin,
+  syncVersion,
+  isOnline,
+  currentGroupId,
+  currentGroupLabel,
+  detailPathBuilder,
+  backTo,
+  backLabel,
+}) => {
+  const territories = useLiveQuery(
+    () => db.territories.where('groupId').equals(currentGroupId).sortBy('createdAt').then((items) => items.reverse()),
+    [currentGroupId],
+    []
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -51,7 +70,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
       }
 
       try {
-        await cacheTerritoriesFromServer();
+        await cacheTerritoriesFromServer(currentGroupId);
 
         if (!isCancelled) {
           setError('');
@@ -72,10 +91,10 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
     return () => {
       isCancelled = true;
     };
-  }, [isOnline, syncVersion]);
+  }, [currentGroupId, isOnline, syncVersion, territories.length]);
 
-  const handleAddTerritory = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleAddTerritory = async (event: React.FormEvent) => {
+    event.preventDefault();
 
     if (!isOnline) {
       setError('Для створення території потрібен інтернет');
@@ -95,6 +114,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
     try {
       const territory = await createTerritory({
         id: crypto.randomUUID(),
+        groupId: currentGroupId,
         name: newTerritory.name,
         imageUrl: newTerritory.imageUrl || 'https://picsum.photos/seed/territory/800/600',
         mapLink: newTerritory.mapLink,
@@ -140,15 +160,24 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
 
   return (
     <div className="container mx-auto px-4 py-8 pb-24">
-      <header className="mb-8 flex justify-between items-center">
-        <h1 className="text-3xl font-bold text-gray-900">Записи Території</h1>
+      <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          {backTo && backLabel && (
+            <Link to={backTo} className="mb-3 inline-flex items-center text-sm text-gray-600 hover:text-gray-900">
+              <ArrowLeft size={18} className="mr-2" />
+              {backLabel}
+            </Link>
+          )}
+          <h1 className="text-3xl font-bold text-gray-900">{currentGroupLabel}</h1>
+          <p className="mt-1 text-sm text-gray-500">Території та квартири цієї групи</p>
+        </div>
         {isAdmin && (
           <button
             onClick={() => setIsAdding(true)}
             className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg flex items-center transition-colors"
           >
             <Plus size={20} className="mr-2" />
-            Додати
+            Додати територію
           </button>
         )}
       </header>
@@ -167,6 +196,7 @@ export const Home: React.FC<HomeProps> = ({ isAdmin, syncVersion, isOnline }) =>
             <TerritoryCard
               key={territory.id}
               {...territory}
+              detailPath={detailPathBuilder(territory.id)}
               apartmentCount={territory.endNumber - territory.startNumber + 1}
               isAdmin={isAdmin}
               onDelete={handleDeleteClick}

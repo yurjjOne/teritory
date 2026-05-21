@@ -1,92 +1,88 @@
-export interface GroupAccessConfig {
+export interface GroupSummary {
   id: string;
   label: string;
-  password: string;
 }
 
-export interface GroupAccessSession {
-  groupId: string;
-  groupLabel: string;
-}
+export type AuthSession =
+  | {
+      role: 'admin';
+      label: string;
+    }
+  | {
+      role: 'group';
+      label: string;
+      groupId: string;
+      groupLabel: string;
+    };
 
-export interface AdminAccessConfig {
-  id: string;
-  label: string;
-  password: string;
-}
+async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  });
 
-const GROUP_SESSION_STORAGE_KEY = 'territory-manager.group-session';
+  if (!response.ok) {
+    let message = 'Помилка сервера';
 
-export const GROUP_ACCESS_CONFIGS: GroupAccessConfig[] = [
-  {
-    id: 'default-group',
-    label: 'Основна група',
-    password: '333',
-  },
-];
-
-export const ADMIN_ACCESS_CONFIGS: AdminAccessConfig[] = [
-  {
-    id: 'default-admin',
-    label: 'Адміністратор',
-    password: 'admin123',
-  },
-];
-
-export function authenticateGroup(password: string): GroupAccessSession | null {
-  const match = GROUP_ACCESS_CONFIGS.find((config) => config.password === password.trim());
-
-  if (!match) {
-    return null;
-  }
-
-  return {
-    groupId: match.id,
-    groupLabel: match.label,
-  };
-}
-
-export function authenticateAdmin(password: string): boolean {
-  return ADMIN_ACCESS_CONFIGS.some((config) => config.password === password.trim());
-}
-
-export function loadGroupAccessSession(): GroupAccessSession | null {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const rawValue = window.sessionStorage.getItem(GROUP_SESSION_STORAGE_KEY);
-  if (!rawValue) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue) as Partial<GroupAccessSession>;
-    if (!parsed.groupId || !parsed.groupLabel) {
-      return null;
+    try {
+      const payload = await response.json();
+      if (payload?.error) {
+        message = payload.error;
+      }
+    } catch {
+      // Ignore invalid JSON error payloads.
     }
 
-    return {
-      groupId: parsed.groupId,
-      groupLabel: parsed.groupLabel,
-    };
-  } catch {
-    return null;
+    throw new Error(message);
   }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json() as Promise<T>;
 }
 
-export function saveGroupAccessSession(session: GroupAccessSession) {
-  if (typeof window === 'undefined') {
-    return;
-  }
+export async function loginWithPassword(password: string): Promise<AuthSession> {
+  const payload = await requestJson<{ session: AuthSession }>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
 
-  window.sessionStorage.setItem(GROUP_SESSION_STORAGE_KEY, JSON.stringify(session));
+  return payload.session;
 }
 
-export function clearGroupAccessSession() {
-  if (typeof window === 'undefined') {
-    return;
+export async function fetchAuthSession(): Promise<AuthSession | null> {
+  const payload = await requestJson<{ session: AuthSession | null }>('/api/auth/session');
+  return payload.session;
+}
+
+export async function logout(): Promise<void> {
+  await requestJson<void>('/api/auth/logout', {
+    method: 'POST',
+  });
+}
+
+export async function fetchGroups(): Promise<GroupSummary[]> {
+  const payload = await requestJson<{ groups: GroupSummary[] }>('/api/groups');
+  return payload.groups;
+}
+
+export async function updateGroupPassword(groupId: string, password: string): Promise<void> {
+  await requestJson<void>(`/api/groups/${groupId}/password`, {
+    method: 'PATCH',
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function getGroupLabel(groupId: string) {
+  const match = groupId.match(/group-(\d+)/i);
+  if (!match) {
+    return 'Група';
   }
 
-  window.sessionStorage.removeItem(GROUP_SESSION_STORAGE_KEY);
+  return `Група ${match[1]}`;
 }

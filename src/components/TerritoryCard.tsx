@@ -8,6 +8,7 @@ interface TerritoryCardProps {
   imageUrl: string;
   mapLink: string;
   apartmentCount: number;
+  detailPath: string;
   isAdmin?: boolean;
   onDelete?: (id: string) => void;
 }
@@ -18,6 +19,7 @@ export const TerritoryCard: React.FC<TerritoryCardProps> = ({
   imageUrl,
   mapLink,
   apartmentCount,
+  detailPath,
   isAdmin,
   onDelete,
 }) => {
@@ -34,11 +36,11 @@ export const TerritoryCard: React.FC<TerritoryCardProps> = ({
           <h3 className="text-white text-xl font-bold truncate">{name}</h3>
           <p className="text-white/80 text-sm">{apartmentCount} Квартир</p>
         </div>
-        
+
         {isAdmin && onDelete && (
-          <button 
-            onClick={(e) => {
-              e.preventDefault();
+          <button
+            onClick={(event) => {
+              event.preventDefault();
               onDelete(id);
             }}
             className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-md hover:bg-red-700 transition-colors z-10"
@@ -50,7 +52,7 @@ export const TerritoryCard: React.FC<TerritoryCardProps> = ({
       </div>
       <div className="p-4 flex justify-between items-center">
         <Link
-          to={`/territory/${id}`}
+          to={detailPath}
           className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg flex-1 text-center mr-2 transition-colors"
         >
           Відкрити

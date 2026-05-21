@@ -2,6 +2,7 @@ import Dexie, { Table } from 'dexie';
 
 export interface Territory {
   id: string;
+  groupId: string;
   name: string;
   imageUrl: string;
   mapLink: string;
@@ -53,6 +54,12 @@ class TerritoryManagerOfflineDB extends Dexie {
 
     this.version(1).stores({
       territories: 'id, createdAt, updatedAt',
+      apartments: 'id, territoryId, number, updatedAt',
+      pendingMutations: 'id, apartmentId, territoryId, updatedAt',
+    });
+
+    this.version(2).stores({
+      territories: 'id, groupId, createdAt, updatedAt',
       apartments: 'id, territoryId, number, updatedAt',
       pendingMutations: 'id, apartmentId, territoryId, updatedAt',
     });

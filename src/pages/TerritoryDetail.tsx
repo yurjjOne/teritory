@@ -10,14 +10,37 @@ import { ArrowLeft, MapPin } from 'lucide-react';
 interface TerritoryDetailProps {
   syncVersion: number;
   isOnline: boolean;
+  currentGroupId: string;
+  backTo: string;
+  backLabel: string;
 }
 
-export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, isOnline }) => {
+export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({
+  syncVersion,
+  isOnline,
+  currentGroupId,
+  backTo,
+  backLabel,
+}) => {
   const { id } = useParams<{ id: string }>();
-  const territory = useLiveQuery(() => (id ? db.territories.get(id) : undefined), [id]);
+  const territory = useLiveQuery(
+    async () => {
+      if (!id) {
+        return undefined;
+      }
+
+      const cachedTerritory = await db.territories.get(id);
+      if (!cachedTerritory || cachedTerritory.groupId !== currentGroupId) {
+        return undefined;
+      }
+
+      return cachedTerritory;
+    },
+    [currentGroupId, id]
+  );
   const apartments = useLiveQuery(
-    () => (id ? db.apartments.where('territoryId').equals(id).sortBy('number') : Promise.resolve([])),
-    [id],
+    () => (territory ? db.apartments.where('territoryId').equals(territory.id).sortBy('number') : Promise.resolve([])),
+    [territory?.id],
     []
   );
   const [isLoading, setIsLoading] = useState(true);
@@ -30,6 +53,7 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
     () => apartments.find((apartment) => apartment.id === selectedApartmentId) ?? null,
     [apartments, selectedApartmentId]
   );
+  const hasCachedTerritory = Boolean(territory);
 
   useEffect(() => {
     if (territory) {
@@ -69,7 +93,7 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
       if (!isOnline) {
         if (!isCancelled) {
           setIsLoading(false);
-          setError(territory ? '' : 'Немає з’єднання із сервером');
+          setError(hasCachedTerritory ? '' : 'Немає з’єднання із сервером');
         }
         return;
       }
@@ -81,7 +105,7 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
           setError('');
         }
       } catch (loadError) {
-        if (!isCancelled && !territory) {
+        if (!isCancelled && !hasCachedTerritory) {
           setError(loadError instanceof Error ? loadError.message : 'Не вдалося завантажити територію');
         }
       } finally {
@@ -96,7 +120,7 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
     return () => {
       isCancelled = true;
     };
-  }, [id, isOnline, syncVersion]);
+  }, [hasCachedTerritory, id, isOnline, syncVersion]);
 
   const restoreScrollPosition = () => {
     const scrollTop = lastScrollPositionRef.current;
@@ -170,8 +194,8 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
         <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {error}
         </div>
-        <Link to="/" className="text-blue-600 hover:text-blue-800">
-          Повернутися до списку територій
+        <Link to={backTo} className="text-blue-600 hover:text-blue-800">
+          {backLabel}
         </Link>
       </div>
     );
@@ -195,10 +219,10 @@ export const TerritoryDetail: React.FC<TerritoryDetailProps> = ({ syncVersion, i
         </div>
       )}
 
-      <header className="mb-6 flex items-center justify-between">
-        <Link to="/" className="text-gray-600 hover:text-gray-900 flex items-center">
+      <header className="mb-6 flex items-center justify-between gap-3">
+        <Link to={backTo} className="text-gray-600 hover:text-gray-900 flex items-center">
           <ArrowLeft size={24} className="mr-2" />
-          Назад
+          {backLabel}
         </Link>
         <h1 className="text-2xl font-bold text-gray-900 truncate max-w-[200px]">{territory.name}</h1>
         <a

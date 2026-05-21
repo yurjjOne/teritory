@@ -2,6 +2,7 @@ import { Apartment, Comment, Territory } from './db';
 
 interface CreateTerritoryInput {
   id: string;
+  groupId: string;
   name: string;
   imageUrl: string;
   mapLink: string;
@@ -47,8 +48,8 @@ async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Pro
   return response.json() as Promise<T>;
 }
 
-export async function fetchTerritories(): Promise<Territory[]> {
-  const payload = await requestJson<{ territories: Territory[] }>('/api/territories');
+export async function fetchTerritories(groupId: string): Promise<Territory[]> {
+  const payload = await requestJson<{ territories: Territory[] }>(`/api/territories?groupId=${encodeURIComponent(groupId)}`);
   return payload.territories;
 }
 

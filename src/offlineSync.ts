@@ -5,12 +5,20 @@ function buildApartmentMutationId(apartmentId: string) {
   return `apartment:${apartmentId}`;
 }
 
-export async function cacheTerritoriesFromServer(): Promise<Territory[]> {
-  const territories = await fetchTerritories();
+export async function clearOfflineState() {
+  await db.transaction('rw', db.territories, db.apartments, db.pendingMutations, async () => {
+    await db.pendingMutations.clear();
+    await db.apartments.clear();
+    await db.territories.clear();
+  });
+}
+
+export async function cacheTerritoriesFromServer(groupId: string): Promise<Territory[]> {
+  const territories = await fetchTerritories(groupId);
   const nextTerritoryIds = new Set(territories.map((territory) => territory.id));
 
   await db.transaction('rw', db.territories, db.apartments, async () => {
-    const cachedTerritoryIds = (await db.territories.toCollection().primaryKeys()) as string[];
+    const cachedTerritoryIds = (await db.territories.where('groupId').equals(groupId).primaryKeys()) as string[];
     const removedTerritoryIds = cachedTerritoryIds.filter((territoryId) => !nextTerritoryIds.has(territoryId));
 
     if (territories.length > 0) {
